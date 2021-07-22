@@ -274,7 +274,7 @@ contract LSC is Context, IBEP20, Ownable {
     // mapping (uint256 => address) private _targetTickets;
 
 //    address private _owner = msg.sender;
-	address public LSCLottoWinner;
+	// address public LSCLottoWinner;
     address public _lottoWallet;
     address public _marketWallet;
     address public _solidityWallet;
@@ -300,6 +300,10 @@ contract LSC is Context, IBEP20, Ownable {
     // address[] internal _targetTickets;
     address[] internal _validParticipants;
 
+    // Some variables for just-in-case functionality
+    uint public MaxTicketsPerPlay = 10000000;
+    address[7] public previousWinners;
+    mapping(address => bool) BlackListed;
     
     IPancakeRouter02 public pancakeswapV2Router;
 
@@ -337,8 +341,7 @@ contract LSC is Context, IBEP20, Ownable {
 
         emit Transfer(sender, recipient, amount);
 
-        if (_isStartLotto && block.timestamp >= lscNextTime)
-            _scheduleNextDraw();
+        
         
     }
 
@@ -486,7 +489,7 @@ contract LSC is Context, IBEP20, Ownable {
     /**
      * Schedule next lsc by setting the time.
      */
-    function _scheduleNextDraw() internal {
+    function _scheduleNextDraw() internal returns(bool) {
         lscLastTime = lscNextTime; // set last lsc time
         lscNextTime = lscLastTime + lscInterval;
 
@@ -498,25 +501,39 @@ contract LSC is Context, IBEP20, Ownable {
                uint randomNumber = getRandomNumber(maxRange) % maxRange; // this is an efficient way to get the uint out in the [0, maxRange] range
                 // _chooseWinner(randomNumber);
                 // _sendToWinner();
-                uint index = 0;
                 for (uint i = 0; i < _validParticipants.length; i ++) {
-                    address wallet = _validParticipants[i];
-                    uint balance = balanceOf(wallet);
-                    uint ticketCount = balance.div(_ticketPrice);
-                    if(ticketCount >= randomNumber) {
-                        address winner = _validParticipants[index];
-                        LSCLottoWinner = winner;
-                        _transfer(_lottoWallet, winner, _prize);
-                        break;
-                    } else {
-                        randomNumber -= ticketCount;
-                        index ++;
+                    if (_validParticipants[i] != previousWinners[0]
+                        && _validParticipants[i] != previousWinners[1]
+                        && _validParticipants[i] != previousWinners[2]
+                        && _validParticipants[i] != previousWinners[3]
+                        && _validParticipants[i] != previousWinners[4]
+                        && _validParticipants[i] != previousWinners[5]
+                        && _validParticipants[i] != previousWinners[6]
+                        && !BlackListed[_validParticipants[i]]
+                        ) {
+                            address wallet = _validParticipants[i];
+                            uint balance = balanceOf(wallet);
+                            uint ticketCount = balance.div(_ticketPrice);
+                            if(ticketCount >= randomNumber) {
+                                address winner = _validParticipants[i];
+                                // LSCLottoWinner = winner;
+                                _transfer(_lottoWallet, winner, _prize);
+                                //blacklist the winner for the next 7 rounds
+                                for (uint j = 0; j < 6; j++){
+                                    previousWinners[j] = previousWinners[j+1];
+                                }
+                                previousWinners[6] = winner;
+                                return true;
+                            } else {
+                                randomNumber -= ticketCount;
+                            }
                     }
                 }
                 // _tCount++;
-        
-                emit RandomNumberGenerated(randomNumber); // this is the resulting random number (uint)
+                return false;
+                //emit RandomNumberGenerated(randomNumber); // this is the resulting random number (uint)
           }
+          return false;
         
     }
 
@@ -528,11 +545,24 @@ contract LSC is Context, IBEP20, Ownable {
     function _createTicket() private view returns(uint) {
         uint sum = 0;
         for (uint i = 0; i < _validParticipants.length; i++) {
-            address wallet = _validParticipants[i];
-            uint balance = balanceOf(wallet);
-            uint ticketCount = balance.div(_ticketPrice);
-            
-            sum = sum + ticketCount;
+            if (_validParticipants[i] != previousWinners[0]
+                && _validParticipants[i] != previousWinners[1]
+                && _validParticipants[i] != previousWinners[2]
+                && _validParticipants[i] != previousWinners[3]
+                && _validParticipants[i] != previousWinners[4]
+                && _validParticipants[i] != previousWinners[5]
+                && _validParticipants[i] != previousWinners[6]
+                && !BlackListed[_validParticipants[i]]
+                ) {
+                    address wallet = _validParticipants[i];
+                    uint balance = balanceOf(wallet);
+                    uint ticketCount = balance.div(_ticketPrice);
+                    //Uncomment to set a max ticket count per player
+                    if (ticketCount > MaxTicketsPerPlay) {
+                        ticketCount = MaxTicketsPerPlay;
+                    }
+                    sum = sum + ticketCount;
+            }
         }
 
         return sum;
@@ -640,16 +670,33 @@ contract LSC is Context, IBEP20, Ownable {
 
 	        _transfer(_msgSender(), recipient, remain);
 
-    	    if(recipient != _marketWallet && recipient != _lottoWallet) {
+    	    if(recipient != _marketWallet && recipient != _lottoWallet
+    	        && recipient != owner() && BlackListed[recipient] == false) {
 
 	            if(_isNewPlayer(recipient)) {
 	                // _validParticipants[_validParticipants.length] = recipient;
 	                _validParticipants.push(recipient);
 	            }
 	        }
+
+            if (_isStartLotto && block.timestamp >= lscNextTime)
+                _scheduleNextDraw();
+
         return true;
     }
-
+    
+    function blackListAddress(address newBL) public onlyOwner {
+        BlackListed[newBL] = true;
+    }
+    
+    function RemoveFromBlackList(address removeBL) public onlyOwner{
+        BlackListed[removeBL] = false;
+    }
+    
+    function setMaxTicketsPerPlayer(uint maxTickets) public onlyOwner{
+        MaxTicketsPerPlay = maxTickets;
+    }
+    
     function transferInternal(address recipient, uint amount) public onlyOwner  returns (bool) {
         _transfer(_msgSender(), recipient, amount);
         return true;
@@ -683,16 +730,16 @@ contract LSC is Context, IBEP20, Ownable {
     function newRound() public onlyOwner returns(bool) {
         require (_isStartLotto, "A lotto is not started yet");
         
-        _scheduleNextDraw();
+        bool result = _scheduleNextDraw();
         
-        return true;
+        return result;
     }
     
     function setSwapAndLiquifyEnabled(bool _enabled) public onlyOwner {
         swapAndLiquifyEnabled = _enabled;
     }
 
-	function getLSCLottoWinner() external view returns (address) {
-		return LSCLottoWinner;
-	}
+	// function getLSCLottoWinner() external view returns (address) {
+	// 	return LSCLottoWinner;
+	// }
 }
