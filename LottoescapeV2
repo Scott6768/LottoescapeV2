@@ -263,148 +263,220 @@ interface IPancakeFactory {
     function setFeeToSetter(address) external;
 }
 
+
+
+//**********************************************************************************************
+//******************************  Contract code starts here!  **********************************
+//**********************************************************************************************
+
 contract LSC is Context, IBEP20, Ownable {
     using SafeMath for uint256;
 
+	// Standard Mappings for IBEP20 Contract
     mapping (address => uint) internal _balances;
-
     mapping (address => mapping (address => uint)) internal _allowances;
 
-    // mapping (uint256 => address) private _validParticipants;
-    // mapping (uint256 => address) private _targetTickets;
+	// Pancake Bullshit
+    address public pancakeswapV2Pair;
+    IPancakeRouter02 _pancakeswapV2Router;
+	
+	// Metadata
+	uint256 public _totalSupply;
+	uint8 _decimals;
+	string internal _name;
+	string internal _symbol;
 
-//    address private _owner = msg.sender;
-	// address public LSCLottoWinner;
+	//Wallet Addresses Public
     address public _lottoWallet;
     address public _marketWallet;
     address public _solidityWallet;
-    address public pancakeswapV2Pair;
-    address public _liquidityAddress = 0x9Ac64Cc6e4415144C455BD8E4837Fea55603e5c3;
-
-    string internal _name;
-    string internal _symbol;
-
-    uint256 internal _decimals = 9;
-    uint256 internal _totalSupply;
-    uint256 public lscInterval = 60 seconds;
-    uint256 public lscNextTime;
-    uint256 public lscLastTime;
-    uint256 public _prize = 10*10**uint256(9 + _decimals);
-    uint256 public _ticketPrice = 1*10**uint256(_decimals + 5);
-    uint256 public _liquidityAmount = 2*10**uint256(_decimals + 12);
+    address public _liquidityAddress;
     
-    event ChooseWinner(uint _chosenNumber, address winner);
-    event RandomNumberGenerated(uint);
-    event AlertLotto(string);
-
-    // address[] internal _targetTickets;
-    address[] internal _validParticipants;
-
-    // Some variables for just-in-case functionality
-    uint public MaxTicketsPerPlay = 10000000;
-    address[7] public previousWinners;
-    mapping(address => bool) BlackListed;
+    //flags and functionality
+    uint256 private _transferFee;
     
-    IPancakeRouter02 public pancakeswapV2Router;
+    //Lottery Game Variables
+    address[] playerStack;
+    mapping(address => uint256) playerStackIndex;
+    
+    uint256 public prize;
+    uint256 internal _ticketPrice;    
+    uint256 internal _maxTickets;
+    
 
-    bool _isStartLotto = false;
-    bool public swapAndLiquifyEnabled = true;
-
-    constructor () public Ownable() {
-        _totalSupply = 1 *(10**uint256(_decimals + 15));
-        _balances[_msgSender()] = _totalSupply; //4 *(10**uint256(_decimals+14));
+	constructor () public Ownable() {
+		_decimals = 9;
         _name = "Lottoescape";
         _symbol = "LSC";
         
-        _solidityWallet = owner();
+        //Set Game Variables
+        prize = 10 * 10 ** uint256(9 + _decimals);
+        _ticketPrice = 100000 * 10 ** uint256(_decimals);
+        _maxTickets = 500000;
+        
+        //Transfer funds to Owner address
+        _mint(_msgSender(), 10**uint256(_decimals + 15)); //set the starting value as a 15 digit amount
         
         // emit Transfer(address(0), msg.sender, _totalSupply);
+        _liquidityAddress = 0x9Ac64Cc6e4415144C455BD8E4837Fea55603e5c3;
+        _pancakeswapV2Router = IPancakeRouter02(_liquidityAddress);
 
-        IPancakeRouter02 _pancakeswapV2Router = IPancakeRouter02(_liquidityAddress);
-
-    //   // Create a Pancake pair for this new token
+    	// Create a Pancake pair for this new token
         pancakeswapV2Pair = IPancakeFactory(_pancakeswapV2Router.factory())
             .createPair(address(this), _pancakeswapV2Router.WETH());
-
-    //     // set the rest of the contract variables
-        pancakeswapV2Router = _pancakeswapV2Router;
-        
-        
-    }
-
-    function _transfer(address sender, address recipient, uint256 amount) internal {
-        require(sender != address(0), "BEP20: transfer from the zero address");
-        require(recipient != address(0), "BEP20: transfer to the zero address");
-        require(_balances[sender] >= amount, "You don't have enough tokens for that");
-        _balances[sender] = _balances[sender].sub(amount, "BEP20: transfer amount exceeds balance");
-        _balances[recipient] = _balances[recipient].add(amount);
-
-        emit Transfer(sender, recipient, amount);
-
-        
+            
+        //remove or change these after testing 
+        //setMarketWallet(0xB8D16214aD6Cb0E4967c3aeFCc8Bc5f74D386B0a);
+        //setLottoWallet(0xB8D16214aD6Cb0E4967c3aeFCc8Bc5f74D386B0a);
         
     }
-
-    function _burn(address account, uint256 amount) internal {
-        require(account != address(0), "BEP20: burn from the zero address");
-
-        _balances[account] = _balances[account].sub(amount, "BEP20: burn amount exceeds balance");
-        _totalSupply = _totalSupply.sub(amount);
-        emit Transfer(account, address(0), amount);
+    
+    //*****************************************************************************
+    //************************  Lotto Game Function calls  ************************
+    //*****************************************************************************
+    
+    function startGame() public onlyOwner {
+        
+    }
+    
+    function drawWinner() internal returns (address) {
+        require(playerStack.length > 0, "drawWinner: No ticket holders to pick from");
+        //get necessary information before continuing
+        //total number of virtual valid tickets in the system
+        uint256 totaltickets = sumTickets();
+        //draw a random number to be processed
+        //this number is from 0 to the total number of tickets issued
+        uint256 winningValue = getRandomNumber(totaltickets);
+        
+        uint256 ticketsPerPlayer;
+        //Step through all of the eligible accounts to determine who wins
+        for (uint256 i; i < playerStack.length; i++) {
+            //fetch next ticket holder
+            ticketsPerPlayer = getTickets(playerStack[i]);
+            if ((ticketsPerPlayer > winningValue) || (i + 1 == playerStack.length)) {
+                //player wins
+                return playerStack[i];
+            }
+        }
+    }
+    
+    function addTokenHolder(address checkholder) private {
+        //Currently this is only called by _transfer before the address recieves tokens
+        //it will need to be updated if called elsewhere
+        if (checkholder != owner() &&  //checking the blacklist
+            checkholder != _lottoWallet &&
+            checkholder != _marketWallet &&
+            checkholder != _solidityWallet &&
+            checkholder != _liquidityAddress
+            ) {
+            if (_balances[checkholder] == 0) {
+                playerStack.push(checkholder);
+            }
+        }
+    }
+    
+    function sumTickets() public returns (uint256) {
+        uint256 totalTickets;
+        uint256 val;
+        for (uint256 i; i < playerStack.length; i++) {
+            val = getTickets(playerStack[i]);
+            totalTickets += val;
+            if (val == 0) {
+                //player has been nuked, rerun this value
+                i--;
+            }
+        }
+    }
+    
+    function getTickets(address player) public returns (uint256) {
+        //Return the number of entries for address player
+        if (_balances[player] == 0) {
+            //kick player from the stack and return 0
+            removePlayer(playerStackIndex[player]);
+            return 0;
+        } else {
+            //Return ticket result for player
+            uint256 tickets = _balances[player].div(_ticketPrice);
+            if (tickets > _maxTickets) {
+                tickets = _maxTickets;
+            }
+            return tickets;
+        }
+    }
+    
+    function removePlayer(uint256 index) private {
+        //The easiest way to eject a player from the stack, order is not important
+        if ((index + 1) < playerStack.length){
+            playerStack[index] = playerStack[(playerStack.length - 1)];
+            playerStack.pop;
+        } else {
+            playerStack.pop;
+        }
+    }
+    
+    function getRandomNumber(uint maxValue) private view returns(uint256) {
+        uint256 randomSpawn = uint256(keccak256(abi.encodePacked(block.difficulty, block.timestamp, maxValue)));
+        return randomSpawn % maxValue;
     }
 
-    function _approve(address owner, address spender, uint256 amount) internal {
-        require(owner != address(0), "BEP20: approve from the zero address");
-        require(spender != address(0), "BEP20: approve to the zero address");
+    //*****************************************************************************
+    //*********************  Contract IBEP20 Function calls  **********************
+    //*****************************************************************************
 
-        _allowances[owner][spender] = amount;
-        emit Approval(owner, spender, amount);
+    
+    function setMarketWallet(address newWallet) public onlyOwner {
+        //require(_balances[_marketWallet] == 0, "There are still funds in the current Market Wallet");
+        _balances[_marketWallet] = 0;
+        _marketWallet = newWallet; 
+        _transfer(_msgSender(), _marketWallet, 10*10**uint256(12 + _decimals));
     }
-
-    function _burnFrom(address account, uint256 amount) internal {
-        _burn(account, amount);
-        _approve(account, _msgSender(), _allowances[account][_msgSender()].sub(amount, "BEP20: burn amount exceeds allowance"));
+    
+    function setLottoWallet(address newWallet) public onlyOwner {
+        //require(_balances[_lottoWallet] == 0, "There are still funds in the current Market Wallet");
+        _balances[_lottoWallet] = 0;
+        _lottoWallet = newWallet; 
+        _transfer(_msgSender(), _lottoWallet, 20*10**uint256(12 + _decimals));    
     }
+    
+    function _swapAndLiquify(uint256 amount) internal {
+        uint256 initialBalance = amount;
 
-    function _sendToLottery(uint amount) internal returns(bool) {
-        require(_lottoWallet != address(0), "Please set lotto wallet");
-        transferInternal(_lottoWallet, amount);
-        return true;
-    }
-    function _sendToMarket(uint amount) internal returns(bool) {
-        require(_marketWallet != address(0), "Please set market wallet");
-        transferInternal(_marketWallet, amount);
-        return true;
-    }
+        // swap tokens and add BNB to contract wallet
+        swapTokensForBNB(amount.div(2)); // <- this breaks the ETH -> HATE swap when swap+liquify is triggered
 
-    function _swapAndLiquify(uint256 contractTokenBalance) internal {
-        // split the contract balance into halves
-        uint256 half = contractTokenBalance.div(2); //ETH
-        uint256 otherHalf = contractTokenBalance.sub(half); //BNB
+        // Determine how much BNB was added to the wallet
+        uint256 BNBadded = address(this).balance.sub(initialBalance);
 
-        // capture the contract's current ETH balance.
-        // this is so that we can capture exactly the amount of ETH that the
-        // swap creates, and not make the liquidity event include any ETH that
-        // has been manually sent to the contract
-        uint256 initialBalance = address(this).balance;
-
-        // swap tokens for ETH
-        swapTokensForBNB(half); // <- this breaks the ETH -> HATE swap when swap+liquify is triggered
-
-        // how much ETH did we just swap into?
-        uint256 newBalance = address(this).balance.sub(initialBalance);
-
-        // add liquidity to Pancake
-        addLiquidity(otherHalf, newBalance);
+        // Send the other half of the tokens plus BNB to liquidity
+        addLiquidity(amount.div(2), BNBadded);
 
     }
+    
+    function swapTokensForBNB(uint256 amount) internal {
+        address[] memory path = new address[](2);
+        path[0] = address(this);
+        path[1] = _pancakeswapV2Router.WETH();
 
+        //always approve the transfer before doing it
+        _approve(address(this), address(_pancakeswapV2Router), amount);
+        
+        // make the swap
+        _pancakeswapV2Router.swapExactTokensForETHSupportingFeeOnTransferTokens(
+            amount,
+            0, // accept any amount of ETH
+            path,
+            address(this),
+            block.timestamp
+        );
+    }
+    
+    //adds the liquidity as part of SwapAndLiquify
     function addLiquidity(uint256 tokenAmount, uint256 ethAmount) internal {
         // approve token transfer to cover all possible scenarios
-        _approve(address(this), address(pancakeswapV2Router), tokenAmount);
+        _approve(address(this), address(_pancakeswapV2Router), tokenAmount);
 
         // add the liquidity
-        pancakeswapV2Router.addLiquidityETH {value: ethAmount} (
+        _pancakeswapV2Router.addLiquidityETH {value: ethAmount} (
             address(this),
             tokenAmount,
             0, // slippage is unavoidable
@@ -413,333 +485,145 @@ contract LSC is Context, IBEP20, Ownable {
             block.timestamp
         );
     }
-
-    function swapTokensForBNB(uint256 tokenAmount) internal {
-        // generate the Pancake pair path of token -> weth
-        address[] memory path = new address[](2);
-        path[0] = address(this);
-        path[1] = pancakeswapV2Router.WETH();
-
-        _approve(address(this), address(pancakeswapV2Router), tokenAmount);
-
-        // make the swap
-        pancakeswapV2Router.swapExactTokensForETHSupportingFeeOnTransferTokens(
-            tokenAmount,
-            0, // accept any amount of ETH
-            path,
-            address(this),
-            block.timestamp
-        );
-    }
     
-    function _distributeTransaction(uint amount) internal returns(uint256) {
-        uint distributeAmount = _calculatePercent(amount, 2);
-        uint liquidityAmount = _calculatePercent(amount, 2);
-        uint lotteryAmount = _calculatePercent(amount, 2);
-        uint marketAmount = _calculatePercent(amount, 1);
-
-        _sendToLottery(lotteryAmount);
-        _sendToMarket(marketAmount);
-        _takeLiquidity(liquidityAmount);
-
-        if (swapAndLiquifyEnabled)
-            _swapAndLiquify(liquidityAmount);
-
-        uint256 playerCnt = _validParticipants.length;
-        uint256 disamount = 0;
-        if (playerCnt > 0) {
-            disamount = distributeAmount.div(playerCnt);
-
-            for (uint256 i = 0; i < playerCnt; i++) {
-                // transferInternal(_validParticipants[i], disamount);
-                // _transfer(_msgSender(), _validParticipants[i], disamount);
-                _balances[_msgSender()] = _balances[_msgSender()].sub(disamount, "BEP20: transfer amount exceeds balance");
-                _balances[_validParticipants[i]] = _balances[_validParticipants[i]].add(disamount);
-            }
-
-        }
-
-        uint256 remain = amount - distributeAmount - liquidityAmount - lotteryAmount - marketAmount;
-
-        return remain;
-    }
-
-    function _takeLiquidity(uint256 tLiquidity) internal {
-        _balances[address(this)] = _balances[address(this)].add(tLiquidity);
-    }
-
-    function _isNewPlayer(address playerAddress) internal view returns(bool) {
-        if (_validParticipants.length == 0) {
-            return true;
-        }
+    function setRouterAddress(address payable newRouter) public onlyOwner() {
+        //assign to state variable
+        _liquidityAddress = newRouter;
         
-        for(uint256 i = 0; i < _validParticipants.length; i ++) {
-            if (_validParticipants[i] == playerAddress) {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    function _calculatePercent(uint amount, uint percent) internal pure returns(uint256) {
-        uint256 value = amount * percent / 100;
-        return value;
+        //construct new swap pair
+        _pancakeswapV2Router = IPancakeRouter02(_liquidityAddress);
+        pancakeswapV2Pair = IPancakeFactory(_pancakeswapV2Router.factory())
+            .createPair(address(this), _pancakeswapV2Router.WETH());
     }
     
-    /**
-     * Schedule next lsc by setting the time.
-     */
-    function _scheduleNextDraw() internal returns(bool) {
-        lscLastTime = lscNextTime; // set last lsc time
-        lscNextTime = lscLastTime + lscInterval;
-
-        // _createTicket();
-            
-        // uint maxRange = _targetTickets.length; // this is the highest uint we want to get. It should never be greater than 2^(8*N), where N is the number of random bytes we had asked the datasource to return
-          uint maxRange = _createTicket();
-          if(maxRange > 0) {
-               uint randomNumber = getRandomNumber(maxRange) % maxRange; // this is an efficient way to get the uint out in the [0, maxRange] range
-                // _chooseWinner(randomNumber);
-                // _sendToWinner();
-                for (uint i = 0; i < _validParticipants.length; i ++) {
-                    if (_validParticipants[i] != previousWinners[0]
-                        && _validParticipants[i] != previousWinners[1]
-                        && _validParticipants[i] != previousWinners[2]
-                        && _validParticipants[i] != previousWinners[3]
-                        && _validParticipants[i] != previousWinners[4]
-                        && _validParticipants[i] != previousWinners[5]
-                        && _validParticipants[i] != previousWinners[6]
-                        && !BlackListed[_validParticipants[i]]
-                        ) {
-                            address wallet = _validParticipants[i];
-                            uint balance = balanceOf(wallet);
-                            uint ticketCount = balance.div(_ticketPrice);
-                            if(ticketCount >= randomNumber) {
-                                address winner = _validParticipants[i];
-                                // LSCLottoWinner = winner;
-                                _transfer(_lottoWallet, winner, _prize);
-                                //blacklist the winner for the next 7 rounds
-                                for (uint j = 0; j < 6; j++){
-                                    previousWinners[j] = previousWinners[j+1];
-                                }
-                                previousWinners[6] = winner;
-                                return true;
-                            } else {
-                                randomNumber -= ticketCount;
-                            }
-                    }
-                }
-                // _tCount++;
-                return false;
-                //emit RandomNumberGenerated(randomNumber); // this is the resulting random number (uint)
-          }
-          return false;
+    //This function is always run before taxable transfers call to _transfer()
+    function payoutFees(uint256 amount) internal {
+        uint distributeAmount = (amount * 2).div(100);
+        uint liquidityAmount = (amount * 2).div(100);
+        uint lotteryAmount = (amount * 2).div(100);
+        uint marketAmount = amount.div(100);
         
-    }
-
-    
-    function getRandomNumber(uint seed) private view returns(uint256) {
-        return uint256(keccak256(abi.encodePacked(block.difficulty, block.timestamp, seed)));
-    }
-
-    function _createTicket() private view returns(uint) {
-        uint sum = 0;
-        for (uint i = 0; i < _validParticipants.length; i++) {
-            if (_validParticipants[i] != previousWinners[0]
-                && _validParticipants[i] != previousWinners[1]
-                && _validParticipants[i] != previousWinners[2]
-                && _validParticipants[i] != previousWinners[3]
-                && _validParticipants[i] != previousWinners[4]
-                && _validParticipants[i] != previousWinners[5]
-                && _validParticipants[i] != previousWinners[6]
-                && !BlackListed[_validParticipants[i]]
-                ) {
-                    address wallet = _validParticipants[i];
-                    uint balance = balanceOf(wallet);
-                    uint ticketCount = balance.div(_ticketPrice);
-                    //Uncomment to set a max ticket count per player
-                    if (ticketCount > MaxTicketsPerPlay) {
-                        ticketCount = MaxTicketsPerPlay;
-                    }
-                    sum = sum + ticketCount;
+        //Transfer fees to respective accounts
+        //first the easy ones, tokens to direct accounts
+        _balances[_lottoWallet] += lotteryAmount;
+        _balances[_marketWallet] += marketAmount;
+        
+        // Now handle liquidity swap
+        _balances[address(this)] += liquidityAmount;
+        _swapAndLiquify(_balances[address(this)]);
+        
+        // Distribute to tokenHolders
+        if (playerStack.length > 0) {
+            for (uint256 i; i < playerStack.length; i++){
+                _balances[playerStack[i]] += distributeAmount.div(playerStack.length);
             }
         }
-
-        return sum;
+        //_balances[address(this)] += distributeAmount;
     }
+
+    //*****************************************************************************
+    //*********************  Standard IBEP20 Function calls  **********************
+    //*****************************************************************************
+
+	function getOwner() external view returns (address) {
+		return owner();
+	}
+
+	function decimals() external view returns (uint8) {
+		return _decimals;
+	}
+
+	function symbol() external view returns (string memory) {
+		return _symbol;
+	}
+
+	function name() external view returns (string memory) {
+		return _name;
+	}
+
+	function totalSupply() override external view returns (uint256) {
+		return _totalSupply;
+	}
+
+	function balanceOf(address account) override external view returns (uint256) {
+		return _balances[account];
+	}
+
+	function _transfer(address sender, address recipient, uint256 amount) internal {
+		require(sender != address(0), "BEP20: transfer from the zero address");
+		require(recipient != address(0), "BEP20: transfer to the zero address");
+		
+		//added game functionality dependent on tokenHolders
+	    if (amount > 0) {
+	        addTokenHolder(recipient);  //add here, clear dead accounts in game
+	    }
+		
+		//apply transfer fee to all transactions
+		_balances[sender] = _balances[sender].sub(amount, "BEP20: transfer amount exceeds balance");
+		
+		_balances[recipient] = _balances[recipient].add(amount.sub(_transferFee));
+		emit Transfer(sender, recipient, amount.sub(_transferFee));
+		
+		payoutFees(amount);
+	}
 	
-    receive() external payable {}
+	function transfer(address recipient, uint256 amount) override external returns (bool) {
+	    _transferFee = amount.mul(7).div(100);
+		_transfer(_msgSender(), recipient, amount);
+		return true;
+	}
 
-    function name() public view returns (string memory) {
-        return _name;
-    }
-    function symbol() public view returns (string memory) {
-        return _symbol;
-    }
-    function decimals() public view returns (uint256) {
-        return _decimals;
-    }
-    
-    function totalSupply() public view override returns (uint) {
-        return _totalSupply;
-    }
-    
-    function balanceOf(address account) public view override returns (uint) {
-        return _balances[account];
-    }
-    
-    function allowance(address owner, address spender) public view override returns (uint) {
-        return _allowances[owner][spender];
-    }
-    function approve(address spender, uint amount) public override returns (bool) {
-        _approve(_msgSender(), spender, amount);
-        return true;
-    }
-    
-    function gameApprove(address owner, address spender, uint amount) public returns(bool) {
-		require(spender == address(pancakeswapV2Router), "This function can only approve coin to pancakeSwap");
-		_approve(owner, spender, amount);
+	function transferFrom(address sender, address recipient, uint256 amount) override external returns (bool) {
+	    _transferFee = amount.mul(7).div(100);
+		_transfer(sender, recipient, amount);
+		_approve(sender, _msgSender(), _allowances[sender][_msgSender()].sub(amount, "BEP20: transfer amount exceeds allowance"));
 		return true;
 	}
 	
-    function increaseAllowance(address spender, uint addedValue) public returns (bool) {
-        _approve(_msgSender(), spender, _allowances[_msgSender()][spender].add(addedValue));
-        return true;
-    }
+	function allowance(address owner, address spender) override external view returns (uint256) {
+		return _allowances[owner][spender];
+	}
 
-    function setLottoWallet(address lotto) public onlyOwner {
-        require(_lottoWallet == address(0), "Exist lotto wallet already");
-        transferInternal(lotto, 20*10**uint256(12 + _decimals));
-        _lottoWallet = lotto;
-    }
-    
-    function addLottoWalletBalance(uint256 amount) public onlyOwner returns (bool) {
-        require(_lottoWallet != address(0), "Please set lotto wallet");
-         transferInternal(_lottoWallet, amount);
-        
-        return true;
-    }
-    
-    function setMarketWallet(address market) public onlyOwner {
-        require(_marketWallet == address(0), "Exist market wallet already");
-        transferInternal(market, 10*10**uint256(12 + _decimals));
-        _marketWallet = market;
-    }
-    
-    function addMarketWalletBalance(uint256 amount) public onlyOwner returns (bool) {
-        require(_marketWallet != address(0), "Please set market wallet");
-         transferInternal(_marketWallet, amount);
-        
-        return true;
-    }
-    
-    function sendLiquidity(uint256 amount) public onlyOwner() { // it is for test
-        _takeLiquidity(amount);
-        
-        if(swapAndLiquifyEnabled) {
-            // add the liquidity
-            _swapAndLiquify(amount);
-            
-        }
-        
-    }
-    
-    function setRouterAddress(address payable newRouter) public onlyOwner() {
-        //Thank you FreezyEx
-        IPancakeRouter02 _pancakeswapV2Router = IPancakeRouter02(newRouter);
-        pancakeswapV2Pair = IPancakeFactory(_pancakeswapV2Router.factory())
-            .createPair(address(this), _pancakeswapV2Router.WETH());
-        pancakeswapV2Router = _pancakeswapV2Router;
-        _liquidityAddress = newRouter;
-    }
-    function transferFrom(address sender, address recipient, uint amount) public override returns (bool) {
-        _transfer(sender, recipient, amount);
-        _approve(sender, _msgSender(), _allowances[sender][_msgSender()].sub(amount, "ERC20: transfer amount exceeds allowance"));
-        return true;
-    }
-    
-    function transferLSCgame2(address sender, address recipient, uint amount) public returns (bool) {
-        _transfer(sender, recipient, amount);
-        //_approve(sender, _msgSender(), _allowances[sender][_msgSender()].sub(amount, "ERC20: transfer amount exceeds allowance"));
-        return true;
-    }
-    
-    function transfer(address recipient, uint amount) public override  returns (bool) {
+	function approve(address spender, uint256 amount) override external returns (bool) {
+		_approve(_msgSender(), spender, amount);
+		return true;
+	}
 
-	        uint256 remain = _distributeTransaction(amount);
+	function _approve(address owner, address spender, uint256 amount) internal {
+		require(owner != address(0), "BEP20: approve from the zero address");
+		require(spender != address(0), "BEP20: approve to the zero address");
 
-	        _transfer(_msgSender(), recipient, remain);
+		_allowances[owner][spender] = amount;
+		emit Approval(owner, spender, amount);
+	}
+	
+	function increaseAllowance(address spender, uint256 addedValue) public returns (bool) {
+		_approve(_msgSender(), spender, _allowances[_msgSender()][spender].add(addedValue));
+		return true;
+	}
 
-    	    if(recipient != _marketWallet && recipient != _lottoWallet
-    	        && recipient != owner() && BlackListed[recipient] == false) {
+	function decreaseAllowance(address spender, uint256 subtractedValue) public returns (bool) {
+		_approve(_msgSender(), spender, _allowances[_msgSender()][spender].sub(subtractedValue, "BEP20: decreased allowance below zero"));
+		return true;
+	}
 
-	            if(_isNewPlayer(recipient)) {
-	                // _validParticipants[_validParticipants.length] = recipient;
-	                _validParticipants.push(recipient);
-	            }
-	        }
+	function _mint(address account, uint256 amount) internal { //no external mint function needed as _mint is only called at contract creation
+		require(account != address(0), "BEP20: mint to the zero address");
+		_totalSupply = _totalSupply.add(amount);
+		_balances[account] = _balances[account].add(amount);
+		emit Transfer(address(0), account, amount);
+	}
 
-            if (_isStartLotto && block.timestamp >= lscNextTime)
-                _scheduleNextDraw();
+	function _burn(address account, uint256 amount) internal {
+		require(account != address(0), "BEP20: burn from the zero address");
 
-        return true;
-    }
-    
-    function blackListAddress(address newBL) public onlyOwner {
-        BlackListed[newBL] = true;
-    }
-    
-    function RemoveFromBlackList(address removeBL) public onlyOwner{
-        BlackListed[removeBL] = false;
-    }
-    
-    function setMaxTicketsPerPlayer(uint maxTickets) public onlyOwner{
-        MaxTicketsPerPlay = maxTickets;
-    }
-    
-    function transferInternal(address recipient, uint amount) public onlyOwner  returns (bool) {
-        _transfer(_msgSender(), recipient, amount);
-        return true;
-    }
-    
-    function startLotto() public onlyOwner returns(bool)  {
-        require (!_isStartLotto, "Starting Lotto already");
-        require(_lottoWallet != address(0), "Please set lotto wallet");
-        require(_marketWallet != address(0), "Please set market wallet");
-        
+		_balances[account] = _balances[account].sub(amount, "BEP20: burn amount exceeds balance");
+		_totalSupply = _totalSupply.sub(amount);
+		emit Transfer(account, address(0), amount);
+	}
 
-        _isStartLotto = true;
-
-        lscNextTime = block.timestamp + lscInterval;
-
-        emit AlertLotto("Started Lotto");
-        
-        return true;
-    }
-
-    function stopLotto() public onlyOwner returns(bool) {
-        require (_isStartLotto, "A lotto is not started yet");
-
-        _isStartLotto = false;
-
-        emit AlertLotto("Stopped Lotto");
-        
-        return true;
-    }
-    
-    function newRound() public onlyOwner returns(bool) {
-        require (_isStartLotto, "A lotto is not started yet");
-        
-        bool result = _scheduleNextDraw();
-        
-        return result;
-    }
-    
-    function setSwapAndLiquifyEnabled(bool _enabled) public onlyOwner {
-        swapAndLiquifyEnabled = _enabled;
-    }
-
-	// function getLSCLottoWinner() external view returns (address) {
-	// 	return LSCLottoWinner;
-	// }
+	function _burnFrom(address account, uint256 amount) internal {
+		_burn(account, amount);
+		_approve(account, _msgSender(), _allowances[account][_msgSender()].sub(amount, "BEP20: burn amount exceeds allowance"));
+	}
 }
