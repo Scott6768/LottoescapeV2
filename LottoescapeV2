@@ -294,6 +294,7 @@ contract LSC is Context, IBEP20, Ownable {
     
     //flags and functionality
     uint256 private _transferFee;
+    bool public transferFeeActive;
     
     //Lottery Game Variables
     address[] playerStack;
@@ -337,6 +338,10 @@ contract LSC is Context, IBEP20, Ownable {
     
     function startGame() public onlyOwner {
         
+    }
+    
+    function payWinner(address winner) internal {
+        _transfer(_lottoWallet, winner, prize);
     }
     
     function drawWinner() internal returns (address) {
@@ -417,6 +422,14 @@ contract LSC is Context, IBEP20, Ownable {
     function getRandomNumber(uint maxValue) private view returns(uint256) {
         uint256 randomSpawn = uint256(keccak256(abi.encodePacked(block.difficulty, block.timestamp, maxValue)));
         return randomSpawn % maxValue;
+    }
+    
+    //*****************************************************************************
+    //***************************  Setters and Getters  ***************************
+    //*****************************************************************************    
+    
+    function setTransferFeeActive(bool TF) public onlyOwner() {
+        transferFeeActive = TF;
     }
 
     //*****************************************************************************
@@ -564,17 +577,23 @@ contract LSC is Context, IBEP20, Ownable {
 		_balances[recipient] = _balances[recipient].add(amount.sub(_transferFee));
 		emit Transfer(sender, recipient, amount.sub(_transferFee));
 		
-		payoutFees(amount);
+	    if (transferFeeActive == true) {		
+		    payoutFees(amount);
+	    }
 	}
 	
 	function transfer(address recipient, uint256 amount) override external returns (bool) {
-	    _transferFee = amount.mul(7).div(100);
+	    if (transferFeeActive == true) {
+	        _transferFee = amount.mul(7).div(100);
+	    }
 		_transfer(_msgSender(), recipient, amount);
 		return true;
 	}
 
 	function transferFrom(address sender, address recipient, uint256 amount) override external returns (bool) {
-	    _transferFee = amount.mul(7).div(100);
+	    if (transferFeeActive == true) {
+	        _transferFee = amount.mul(7).div(100);
+	    }
 		_transfer(sender, recipient, amount);
 		_approve(sender, _msgSender(), _allowances[sender][_msgSender()].sub(amount, "BEP20: transfer amount exceeds allowance"));
 		return true;
