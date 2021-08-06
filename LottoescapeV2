@@ -476,6 +476,10 @@ contract LSC is Context, IBEP20, Ownable {
         //_approve(sender, _msgSender(), _allowances[sender][_msgSender()].sub(amount, "ERC20: transfer amount exceeds allowance"));
         return true;
     }
+	
+	function pancakeswapV2Router() public returns (IPancakeRouter02) {
+		return _pancakeswapV2Router;
+	}
     
     receive() external payable {}
     
