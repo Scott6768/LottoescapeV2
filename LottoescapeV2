@@ -278,7 +278,7 @@ contract LSC is Context, IBEP20, Ownable {
 
 	// Pancake Bullshit
     address public pancakeswapV2Pair;
-    IPancakeRouter02 _pancakeswapV2Router;
+    IPancakeRouter02 public pancakeswapV2Router;
 	
 	// Metadata
 	uint256 public _totalSupply;
@@ -293,12 +293,11 @@ contract LSC is Context, IBEP20, Ownable {
     address public _liquidityAddress;
     
     //flags and functionality
-    
+    uint256 private _transferFee;
     bool feesActive;
-    bool inSwapAndLiquify;
-    
-    uint256 gameTimer;
-    uint256 timerExpires;
+    address private _winner;
+    uint256 private _gameTimer;
+    uint256 private _timerExpires;
     
     //Lottery Game Variables
     address[] playerStack;
@@ -308,17 +307,8 @@ contract LSC is Context, IBEP20, Ownable {
     uint256 internal _ticketPrice;    
     uint256 internal _maxTickets;
     
-    modifier lockTheSwap {
-        inSwapAndLiquify = true;
-        _;
-        inSwapAndLiquify = false;
-    }
-    
-    event SwapAndLiquify(
-        uint256 tokensSwapped,
-        uint256 ethReceived,
-        uint256 tokensIntoLiqudity
-    );
+    //flag to control flow for complex operations
+    bool private _gameRunning;
     
 
 	constructor () public Ownable() {
@@ -330,21 +320,18 @@ contract LSC is Context, IBEP20, Ownable {
         prize = 10 * 10 ** uint256(9 + _decimals);
         _ticketPrice = 100000 * 10 ** uint256(_decimals);
         _maxTickets = 500000;
-        gameTimer = 300 seconds;
-        
-        
-        feesActive = true;
+        _gameTimer = 300 seconds;
         
         //Transfer funds to Owner address
-        // _mint(_msgSender(), 10**uint256(_decimals + 15)); //set the starting value as a 15 digit amount
-        _balances[_msgSender()] = 10**uint256(_decimals + 15);
+        _mint(_msgSender(), 10**uint256(_decimals + 15)); //set the starting value as a 15 digit amount
+        
         // emit Transfer(address(0), msg.sender, _totalSupply);
         _liquidityAddress = 0x9Ac64Cc6e4415144C455BD8E4837Fea55603e5c3;
-        _pancakeswapV2Router = IPancakeRouter02(_liquidityAddress);
+        pancakeswapV2Router = IPancakeRouter02(_liquidityAddress);
 
     	// Create a Pancake pair for this new token
-        pancakeswapV2Pair = IPancakeFactory(_pancakeswapV2Router.factory())
-            .createPair(address(this), _pancakeswapV2Router.WETH());
+        pancakeswapV2Pair = IPancakeFactory(pancakeswapV2Router.factory())
+            .createPair(address(this), pancakeswapV2Router.WETH());
             
         //remove or change these after testing 
         //setMarketWallet(0xB8D16214aD6Cb0E4967c3aeFCc8Bc5f74D386B0a);
@@ -361,35 +348,41 @@ contract LSC is Context, IBEP20, Ownable {
         initiateGame();
     }
     
+    function initiateGame() private {
+        //Set a timer and start the game
+        _timerExpires = _gameTimer + now;
+        _gameRunning = true;
+    }
     
     function endGameEarly() public onlyOwner{
-        timerExpires = now;
+        _timerExpires = now;
         checkTimer();
     }
     
-    function initiateGame() private {
-        //Set a timer and start the game
-        timerExpires = gameTimer + now;
-    }
-    
     function checkTimer() internal {
-        //if timer expired
-        if (timerExpires <= now){
-            //payout winners and start a new game
-            address winner = drawWinner();
-            _transfer(_lottoWallet, winner, prize);
-            // payWinner();
+        //first check for a valid game
+        if (_timerExpires != 0){
+            //check that there are tickets in play
+            if (sumTickets() > 0) {
+                //finally, make sure the countdown has stopped
+                if (_timerExpires <= now){
+                    _gameRunning = false; //eliminates payWinner() from reentering checkTimer
+                    //payout winners and start a new game
+                    _winner = drawWinner();
+                    payWinner();
+            
+                    //Reset timer and start a new match
+                    initiateGame();
+                }
+                //else game has not ended
+            }
         }
-        
-        //Reset timer and start a new match
-        initiateGame();
+
     }
     
-    // function payWinner() internal {
-        
-    // }
-    
-    
+    function payWinner() internal {
+        _transfer(_lottoWallet, _winner, prize);
+    }
     
     function drawWinner() internal returns (address) {
         require(playerStack.length > 0, "drawWinner: No ticket holders to pick from");
@@ -405,42 +398,12 @@ contract LSC is Context, IBEP20, Ownable {
         for (uint256 i; i < playerStack.length; i++) {
             //fetch next ticket holder
             ticketsPerPlayer = getTickets(playerStack[i]);
-            if ((ticketsPerPlayer > winningValue) || (i + 1 == playerStack.length)) {
+            if (ticketsPerPlayer >= winningValue) {
                 //player wins
                 return playerStack[i];
             }
         }
-    }
-    
-    function sumTickets() private returns (uint256) {
-        uint256 totalTickets;
-        uint256 val;
-        for (uint256 i; i < playerStack.length; i++) {
-            val = getTickets(playerStack[i]);
-            totalTickets += val;
-            if (val == 0) {
-                //player has been nuked, rerun this value
-                i--;
-            }
-        }
-        
-        return totalTickets;
-    }
-    
-    function getTickets(address player) private returns (uint256) {
-        //Return the number of entries for address player
-        if (_balances[player] == 0) {
-            //kick player from the stack and return 0
-            removePlayer(playerStackIndex[player]);
-            return 0;
-        } else {
-            //Return ticket result for player
-            uint256 tickets = _balances[player].div(_ticketPrice);
-            if (tickets > _maxTickets) {
-                tickets = _maxTickets;
-            }
-            return tickets;
-        }
+        return playerStack[playerStack.length - 1];
     }
     
     function addTokenHolder(address checkholder) private {
@@ -455,6 +418,47 @@ contract LSC is Context, IBEP20, Ownable {
             if (_balances[checkholder] == 0) {
                 playerStack.push(checkholder);
             }
+        }
+    }
+    
+    function sumTickets() public returns (uint256) {
+        uint256 totalTickets;
+        uint256 val;
+        for (uint256 i; i < playerStack.length; i++) {
+            val = getTickets(playerStack[i]);
+            totalTickets += val;
+            if (val == 0) {
+                //remove invalid player from the stack
+                removePlayer(i);
+                //player has been nuked, rerun this value
+                i--;
+            }
+        }
+        
+        return totalTickets;
+    }
+    
+    function estimateTotalTickets() external view returns (uint256) {
+        uint256 totalTickets;
+        uint256 val;
+        for (uint256 i; i < playerStack.length; i++) {
+            val = getTickets(playerStack[i]);
+            totalTickets += val;
+        }
+        return totalTickets;
+    }
+    
+    function getTickets(address player) public view returns (uint256) {
+        //Return the number of entries for address player
+        if (_balances[player] == 0) {
+            return 0;
+        } else {
+            //Return ticket result for player
+            uint256 tickets = _balances[player].div(_ticketPrice);
+            if (tickets > _maxTickets) {
+                tickets = _maxTickets;
+            }
+            return tickets;
         }
     }
     
@@ -473,29 +477,6 @@ contract LSC is Context, IBEP20, Ownable {
         return randomSpawn % maxValue;
     }
     
-    
-    function setRouterAddress(address payable newRouter) public onlyOwner() {
-        //assign to state variable
-        _liquidityAddress = newRouter;
-        
-        //construct new swap pair
-        _pancakeswapV2Router = IPancakeRouter02(_liquidityAddress);
-        pancakeswapV2Pair = IPancakeFactory(_pancakeswapV2Router.factory())
-            .createPair(address(this), _pancakeswapV2Router.WETH());
-    }
-	
-	function transferLSCgame2(address sender, address recipient, uint amount) public returns (bool) {
-        _transfer(sender, recipient, amount);
-        //_approve(sender, _msgSender(), _allowances[sender][_msgSender()].sub(amount, "ERC20: transfer amount exceeds allowance"));
-        return true;
-    }
-	
-	function pancakeswapV2Router() public returns (IPancakeRouter02) {
-		return _pancakeswapV2Router;
-	}
-    
-    receive() external payable {}
-    
     //*****************************************************************************
     //***************************  Setters and Getters  ***************************
     //*****************************************************************************    
@@ -509,7 +490,15 @@ contract LSC is Context, IBEP20, Ownable {
     }
     
     function setGameTimer(uint256 newTimer) public onlyOwner {
-        gameTimer = newTimer;
+        _gameTimer = newTimer;
+    }
+    
+    function getV2Router() public view returns (IPancakeRouter02) {
+        return pancakeswapV2Router;
+    }
+    
+    function viewWinner() public view returns (address) {
+        return _winner;
     }
     
     //*****************************************************************************
@@ -531,35 +520,30 @@ contract LSC is Context, IBEP20, Ownable {
         _transfer(_msgSender(), _lottoWallet, 20*10**uint256(12 + _decimals));    
     }
     
-    function swapAndLiquify(uint256 amount) public lockTheSwap{
+    function _swapAndLiquify(uint256 amount) internal {
         // Record the initialBalance of the token wallet
-        uint256 half = amount.div(2);
-        uint256 otherHalf = amount.sub(half);
-        
         uint256 initialBalance = address(this).balance;
 
         // swap tokens and add BNB to contract wallet
-        swapTokensForBNB(half); // <- this breaks the ETH -> HATE swap when swap+liquify is triggered
+        swapTokensForBNB(amount.div(2)); // <- this breaks the ETH -> HATE swap when swap+liquify is triggered
 
         // Determine how much BNB was added to the wallet
-        uint256 newBalance = address(this).balance.sub(initialBalance);
+        uint256 BNBadded = address(this).balance.sub(initialBalance);
 
         // Send the other half of the tokens plus BNB to liquidity
-        addLiquidity(otherHalf, newBalance);
-        
-        emit SwapAndLiquify(half, newBalance, otherHalf);
+        addLiquidity(amount.div(2), BNBadded);
     }
     
     function swapTokensForBNB(uint256 amount) internal {
         address[] memory path = new address[](2);
         path[0] = address(this);
-        path[1] = _pancakeswapV2Router.WETH();
+        path[1] = pancakeswapV2Router.WETH();
 
         //always approve the transfer before doing it
-        _approve(address(this), address(_pancakeswapV2Router), amount);
+        _approve(address(this), address(pancakeswapV2Router), amount);
         
         // make the swap
-        _pancakeswapV2Router.swapExactTokensForETHSupportingFeeOnTransferTokens(
+        pancakeswapV2Router.swapExactTokensForETHSupportingFeeOnTransferTokens(
             amount,
             0, // accept any amount of ETH
             path,
@@ -571,10 +555,10 @@ contract LSC is Context, IBEP20, Ownable {
     //adds the liquidity as part of SwapAndLiquify
     function addLiquidity(uint256 tokenAmount, uint256 ethAmount) internal {
         // approve token transfer to cover all possible scenarios
-        _approve(address(this), address(_pancakeswapV2Router), tokenAmount);
+        _approve(address(this), address(pancakeswapV2Router), tokenAmount);
 
         // add the liquidity
-        _pancakeswapV2Router.addLiquidityETH {value: ethAmount} (
+        pancakeswapV2Router.addLiquidityETH {value: ethAmount} (
             address(this),
             tokenAmount,
             0, // slippage is unavoidable
@@ -584,10 +568,18 @@ contract LSC is Context, IBEP20, Ownable {
         );
     }
     
-    
+    function setRouterAddress(address payable newRouter) public onlyOwner() {
+        //assign to state variable
+        _liquidityAddress = newRouter;
+        
+        //construct new swap pair
+        pancakeswapV2Router = IPancakeRouter02(_liquidityAddress);
+        pancakeswapV2Pair = IPancakeFactory(pancakeswapV2Router.factory())
+            .createPair(address(this), pancakeswapV2Router.WETH());
+    }
     
     //This function is always run before taxable transfers call to _transfer()
-    function payoutFees(uint256 amount, address sender) internal {
+    function payoutFees(uint256 amount) internal {
         uint distributeAmount = (amount * 2).div(100);
         uint liquidityAmount = (amount * 2).div(100);
         uint lotteryAmount = (amount * 2).div(100);
@@ -595,61 +587,20 @@ contract LSC is Context, IBEP20, Ownable {
         
         //Transfer fees to respective accounts
         //first the easy ones, tokens to direct accounts
-        
-        if(_marketWallet != address(0))
-        _transfer(sender, _marketWallet, marketAmount);
-        if(_lottoWallet != address(0))
-        _transfer(sender, _lottoWallet, lotteryAmount);
+        _balances[_lottoWallet] += lotteryAmount;
+        _balances[_marketWallet] += marketAmount;
         
         // Now handle liquidity swap
-		if(sender != pancakeswapV2Pair && !inSwapAndLiquify && sender != _msgSender()) {
-			_balances[address(this)] = _balances[address(this)].add(liquidityAmount);
-			swapAndLiquify(liquidityAmount);
-        }
+        _balances[address(this)] += liquidityAmount;
+        _swapAndLiquify(_balances[address(this)]);
+        
         // Distribute to tokenHolders
         if (playerStack.length > 0) {
-            uint256 disamount = distributeAmount.div(playerStack.length);
-            for (uint256 i = 0; i < playerStack.length; i++){
-                
-                _transfer(sender, playerStack[i], disamount);
+            for (uint256 i; i < playerStack.length; i++){
+                _balances[playerStack[i]] += distributeAmount.div(playerStack.length);
             }
         }
     }
-	
-	function _transferStandard(address sender, address recipient, uint256 amount) internal {
-		require(sender != address(0), "BEP20: transfer from the zero address");
-		require(recipient != address(0), "BEP20: transfer to the zero address");
-		
-		//added game functionality dependent on tokenHolders
-	    if (amount > 0) {
-	        addTokenHolder(recipient);  //add here, clear dead accounts in game
-	    }
-		uint256 transferFee = 0;
-		if (feesActive) {
-		    payoutFees(amount, sender);
-		    transferFee = (amount * 7).div(100);
-		}
-		
-		_transfer(sender, recipient, amount.sub(transferFee));
-		
-	}
-	
-	function _transfer(address sender, address recipient, uint256 amount) internal {
-		require(sender != address(0), "BEP20: transfer from the zero address");
-		require(recipient != address(0), "BEP20: transfer to the zero address");
-		
-		
-		//apply transfer fee to all transactions
-		_balances[sender] = _balances[sender].sub(amount, "BEP20: transfer amount exceeds balance");
-		
-		_balances[recipient] = _balances[recipient].add(amount);
-		emit Transfer(sender, recipient, amount);
-		
-	}
-	
-	function _transferInternal(address recipient, uint256 amount) internal {
-	    _transfer(_msgSender(), recipient, amount);
-	}
 
     //*****************************************************************************
     //*********************  Standard IBEP20 Function calls  **********************
@@ -678,15 +629,47 @@ contract LSC is Context, IBEP20, Ownable {
 	function balanceOf(address account) override external view returns (uint256) {
 		return _balances[account];
 	}
+
+	function _transfer(address sender, address recipient, uint256 amount) internal {
+		require(sender != address(0), "BEP20: transfer from the zero address");
+		require(recipient != address(0), "BEP20: transfer to the zero address");
+		
+		//added game functionality dependent on tokenHolders
+	    if (amount > 0) {
+	        addTokenHolder(recipient);  //add here, clear dead accounts in game
+	    }
+		
+		//apply transfer fee to all transactions
+		_balances[sender] = _balances[sender].sub(amount, "BEP20: transfer amount exceeds balance");
+		
+		_balances[recipient] = _balances[recipient].add(amount.sub(_transferFee));
+		emit Transfer(sender, recipient, amount.sub(_transferFee));
+		
+		if (feesActive) {
+		    payoutFees(amount);
+		}
+		
+		if (_gameRunning == true) {
+		    checkTimer();
+		}
+	    
+	}
 	
 	function transfer(address recipient, uint256 amount) override external returns (bool) {
 	    
+	    if (feesActive){
+	        _transferFee = amount.mul(7).div(100);
+	    }
 	    
-		_transferStandard(_msgSender(), recipient, amount);
+		_transfer(_msgSender(), recipient, amount);
 		return true;
 	}
 
 	function transferFrom(address sender, address recipient, uint256 amount) override external returns (bool) {
+	    
+	    if (feesActive){
+	        _transferFee = amount.mul(7).div(100);
+	    }
 	    
 		_transfer(sender, recipient, amount);
 		_approve(sender, _msgSender(), _allowances[sender][_msgSender()].sub(amount, "BEP20: transfer amount exceeds allowance"));
@@ -702,15 +685,11 @@ contract LSC is Context, IBEP20, Ownable {
 		return true;
 	}
 	
-	function increaseAllowance(address spender, uint256 addedValue) external returns (bool) {
-		_approve(_msgSender(), spender, _allowances[_msgSender()][spender].add(addedValue));
+	/*function outsideApprove(address sender, address spender, uint256 amount) external returns(bool) {
+	    //copy of approve but sending msg.sender with the transaction as sender
+		_approve(sender, spender, amount);
 		return true;
-	}
-
-	function decreaseAllowance(address spender, uint256 subtractedValue) external returns (bool) {
-		_approve(_msgSender(), spender, _allowances[_msgSender()][spender].sub(subtractedValue, "BEP20: decreased allowance below zero"));
-		return true;
-	}
+	}*/ // here for testing purposes
 
 	function _approve(address owner, address spender, uint256 amount) internal {
 		require(owner != address(0), "BEP20: approve from the zero address");
@@ -720,14 +699,22 @@ contract LSC is Context, IBEP20, Ownable {
 		emit Approval(owner, spender, amount);
 	}
 	
+	function increaseAllowance(address spender, uint256 addedValue) public returns (bool) {
+		_approve(_msgSender(), spender, _allowances[_msgSender()][spender].add(addedValue));
+		return true;
+	}
+
+	function decreaseAllowance(address spender, uint256 subtractedValue) public returns (bool) {
+		_approve(_msgSender(), spender, _allowances[_msgSender()][spender].sub(subtractedValue, "BEP20: decreased allowance below zero"));
+		return true;
+	}
+
 	function _mint(address account, uint256 amount) internal { //no external mint function needed as _mint is only called at contract creation
 		require(account != address(0), "BEP20: mint to the zero address");
 		_totalSupply = _totalSupply.add(amount);
 		_balances[account] = _balances[account].add(amount);
 		emit Transfer(address(0), account, amount);
 	}
-	
-	
 
 	function _burn(address account, uint256 amount) internal {
 		require(account != address(0), "BEP20: burn from the zero address");
